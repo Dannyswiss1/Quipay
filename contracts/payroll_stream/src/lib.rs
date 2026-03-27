@@ -24,6 +24,7 @@ pub enum DataKey {
     WithdrawalCooldown,      // Minimum seconds a worker must wait between withdrawals
     LastWithdrawal(Address), // Timestamp of last successful withdrawal per worker
     CancellationGracePeriod, // Seconds a stream keeps paying after cancel is requested
+    Dispute(u64),             // Active dispute for a stream (stream_id)
 }
 
 #[contracttype]
@@ -44,6 +45,24 @@ pub enum StreamStatus {
     Completed = 2,
     Paused = 3,
     PendingCancel = 4,
+    Disputed = 5, // New status for streams under dispute
+}
+
+/// Resolution outcome chosen by the admin/arbitrator.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+
+
+
+
+pub enum DisputeOutcome {
+    /// Dispute dismissed — stream unfreezes and resumes from current position.
+    Resume = 0,
+    /// Stream cancelled; full remaining balance refunded to employer.
+    CancelWithRefund = 1,
+    /// Stream cancelled; worker gets earned amount, employer gets remainder.
+    CancelWithPartialPayout = 2,
 }
 
 #[contracttype]
@@ -482,6 +501,10 @@ impl PayrollStream {
             return Err(QuipayError::StreamClosed);
         }
 
+        if stream.status == StreamStatus::Disputed {
+            return Err(QuipayError::StreamNotFound);
+        }
+
         let now = env.ledger().timestamp();
 
         // Enforce per-worker withdrawal cooldown
@@ -620,6 +643,13 @@ impl PayrollStream {
                             amount: 0,
                             success: false,
                         })
+                    } else if stream.status == StreamStatus::Disputed {
+                        BatchWithdrawalPlan::Result(WithdrawResult {
+                            stream_id,
+                            amount: 0,
+                            success: false,
+                        })
+
                     } else {
                         let vested = Self::vested_amount(&stream, now);
                         let available = vested.checked_sub(stream.withdrawn_amount).unwrap_or(0);
@@ -808,6 +838,11 @@ impl PayrollStream {
 
             // Skip closed streams — they have nothing left to pay.
             if Self::is_closed(&stream) {
+                processed += 1;
+                continue;
+            }
+
+            if stream.status == StreamStatus::Disputed {
                 processed += 1;
                 continue;
             }
@@ -1844,7 +1879,7 @@ impl PayrollStream {
     }
 
     /// Invoke `payout_liability` on the vault contract.
-    fn call_vault_payout(
+    pub (crate) fn call_vault_payout(
         env: &Env,
         vault: &Address,
         worker: Address,
@@ -1865,7 +1900,7 @@ impl PayrollStream {
     }
 
     /// Invoke `remove_liability` on the vault contract.
-    fn call_vault_remove_liability(env: &Env, vault: &Address, token: Address, amount: i128) {
+     pub (crate) fn call_vault_remove_liability(env: &Env, vault: &Address, token: Address, amount: i128) {
         use soroban_sdk::{IntoVal, Symbol, vec};
         env.invoke_contract::<()>(
             vault,
@@ -1874,7 +1909,7 @@ impl PayrollStream {
         );
     }
 
-    fn vested_amount_at(stream: &Stream, timestamp: u64) -> i128 {
+    pub (crate) fn vested_amount_at(stream: &Stream, timestamp: u64) -> i128 {
         let is_closed = Self::is_closed(stream);
         let mut effective_ts = if is_closed {
             core::cmp::min(timestamp, stream.closed_at)
@@ -1932,12 +1967,31 @@ impl PayrollStream {
             .checked_div(duration_i)
             .unwrap_or(stream.total_amount)
     }
+
+    pub fn raise_dispute(env: Env, stream_id: u64, caller: Address, reason_hash: soroban_sdk::BytesN<32>) -> Result<(), QuipayError>{
+        Self::require_not_paused(&env)?;
+        dispute::raise_dispute(&env, stream_id, &caller, reason_hash)
+    }
+
+    pub fn resolve_dispute(env: Env, stream_id: u64, arbitrator: Address, outcome: DisputeOutcome,) -> Result<(), QuipayError> {
+        Self::require_not_paused(&env)?;
+        dispute::resolve_dispute(&env, stream_id, &arbitrator, outcome)
+    }
+
+    pub fn get_dispute(env: Env, stream_id: u64) -> Option<dispute::Dispute> {
+    dispute::get_dispute(&env, stream_id)
+    }
+
+    pub fn has_open_dispute(env: Env, stream_id: u64) -> bool {
+    dispute::has_open_dispute(&env, stream_id)
+    }
 }
 
 mod extension_test;
 mod pause_test;
 mod stream_extension;
 mod stream_pause;
+mod dispute;
 mod test;
 
 #[cfg(test)]
