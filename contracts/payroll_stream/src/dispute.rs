@@ -18,6 +18,12 @@ use crate::{DataKey, DisputeOutcome, PayrollStream, Stream, StreamKey, StreamSta
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaybeOutcome {
+    None,
+    Some(DisputeOutcome),
+}
 /// Persistent on-chain dispute record.
 /// Stored at `DataKey::Dispute(stream_id)` in persistent storage.
 #[contracttype]
@@ -33,7 +39,8 @@ pub struct Dispute {
     /// True once the arbitrator has resolved the dispute.
     pub resolved: bool,
     /// Arbitrator's chosen outcome (None until resolved).
-    pub outcome: Option<DisputeOutcome>,
+    //pub outcome: Option<DisputeOutcome>,
+    pub outcome: MaybeOutcome,
 }
 
 // ─── raise_dispute ────────────────────────────────────────────────────────────
@@ -97,7 +104,7 @@ pub fn raise_dispute(
             reason_hash: reason_hash.clone(),
             raised_at: now,
             resolved: false,
-            outcome: None,
+            outcome: MaybeOutcome::None,
         },
     );
 
@@ -192,8 +199,19 @@ pub fn resolve_dispute(
 
             if remaining > 0 {
                 // Remove liability from vault then pay employer
-                PayrollStream::call_vault_remove_liability(&env, &vault, stream.token.clone(), remaining);
-                PayrollStream::call_vault_payout(&env, &vault, stream.employer.clone(), stream.token.clone(), remaining);
+                PayrollStream::call_vault_remove_liability(
+                    &env,
+                    &vault,
+                    stream.token.clone(),
+                    remaining,
+                );
+                PayrollStream::call_vault_payout(
+                    &env,
+                    &vault,
+                    stream.employer.clone(),
+                    stream.token.clone(),
+                    remaining,
+                );
             }
 
             stream.status = StreamStatus::Canceled;
@@ -222,7 +240,11 @@ pub fn resolve_dispute(
 
             if worker_payout > 0 {
                 PayrollStream::call_vault_payout(
-                    env, &vault, stream.worker.clone(), stream.token.clone(), worker_payout,
+                    env,
+                    &vault,
+                    stream.worker.clone(),
+                    stream.token.clone(),
+                    worker_payout,
                 );
                 stream.withdrawn_amount = stream
                     .withdrawn_amount
@@ -234,10 +256,17 @@ pub fn resolve_dispute(
             if employer_refund > 0 {
                 // Remaining liability that isn't paid to worker — remove then refund
                 PayrollStream::call_vault_remove_liability(
-                    env, &vault, stream.token.clone(), employer_refund,
+                    env,
+                    &vault,
+                    stream.token.clone(),
+                    employer_refund,
                 );
                 PayrollStream::call_vault_payout(
-                    env, &vault, stream.employer.clone(), stream.token.clone(), employer_refund,
+                    env,
+                    &vault,
+                    stream.employer.clone(),
+                    stream.token.clone(),
+                    employer_refund,
                 );
             }
 
@@ -248,7 +277,7 @@ pub fn resolve_dispute(
 
     // Mark dispute resolved
     dispute.resolved = true;
-    dispute.outcome = Some(outcome.clone());
+    dispute.outcome = MaybeOutcome::Some(outcome);
     env.storage()
         .persistent()
         .set(&DataKey::Dispute(stream_id), &dispute);
@@ -271,9 +300,7 @@ pub fn resolve_dispute(
 // ─── View helpers ─────────────────────────────────────────────────────────────
 
 pub fn get_dispute(env: &Env, stream_id: u64) -> Option<Dispute> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Dispute(stream_id))
+    env.storage().persistent().get(&DataKey::Dispute(stream_id))
 }
 
 pub fn has_open_dispute(env: &Env, stream_id: u64) -> bool {

@@ -28,6 +28,7 @@ fn create_basic_stream(
         &now,
         &(now + 100),
         &None,
+        &None,
     )
 }
 

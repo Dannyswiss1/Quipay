@@ -5,6 +5,7 @@ use soroban_sdk::{
     Address, BytesN, Env, IntoVal, Symbol, Vec, contract, contractimpl, contracttype,
 };
 
+
 const MAX_BATCH_CREATE_STREAMS: u32 = 20;
 const MAX_BATCH_CLAIM_STREAMS: u32 = 50; // max active streams processed in one batch_claim call
 const MAX_STREAM_DURATION: u64 = 365 * 24 * 60 * 60; // 365 days in seconds
@@ -24,7 +25,7 @@ pub enum DataKey {
     WithdrawalCooldown,      // Minimum seconds a worker must wait between withdrawals
     LastWithdrawal(Address), // Timestamp of last successful withdrawal per worker
     CancellationGracePeriod, // Seconds a stream keeps paying after cancel is requested
-    Dispute(u64),             // Active dispute for a stream (stream_id)
+    Dispute(u64),            // Active dispute for a stream (stream_id)
 }
 
 #[contracttype]
@@ -52,9 +53,6 @@ pub enum StreamStatus {
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
-
-
-
 
 pub enum DisputeOutcome {
     /// Dispute dismissed — stream unfreezes and resumes from current position.
@@ -93,6 +91,14 @@ pub struct Stream {
     pub total_paused_duration: u64,
     pub metadata_hash: Option<BytesN<32>>,
     pub cancel_effective_at: u64, // 0 means no pending cancellation; >0 means grace period active
+    pub speed_curve: stream_curve::SpeedCurve, // New field for customizable speed curves
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaybeSpeedCurve {
+    None,
+    Some(stream_curve::SpeedCurve),
 }
 
 #[contracttype]
@@ -106,6 +112,7 @@ pub struct StreamParams {
     pub start_ts: u64,
     pub end_ts: u64,
     pub metadata_hash: Option<BytesN<32>>,
+    pub speed_curve: MaybeSpeedCurve,
 }
 
 #[contracttype]
@@ -380,6 +387,7 @@ impl PayrollStream {
         start_ts: u64,
         end_ts: u64,
         metadata_hash: Option<BytesN<32>>,
+        speed_curve: Option<stream_curve::SpeedCurve>,
     ) -> Result<u64, QuipayError> {
         Self::require_not_paused(&env)?;
         employer.require_auth();
@@ -395,6 +403,7 @@ impl PayrollStream {
             start_ts,
             end_ts,
             metadata_hash,
+            speed_curve,
         )?;
 
         env.events().publish(
@@ -451,6 +460,10 @@ impl PayrollStream {
                 param.start_ts,
                 param.end_ts,
                 param.metadata_hash.clone(),
+                match param.speed_curve {
+                    MaybeSpeedCurve::Some(c) => Some(c),
+                    MaybeSpeedCurve::None => None,
+                },
             )?;
 
             env.events().publish(
@@ -649,7 +662,6 @@ impl PayrollStream {
                             amount: 0,
                             success: false,
                         })
-
                     } else {
                         let vested = Self::vested_amount(&stream, now);
                         let available = vested.checked_sub(stream.withdrawn_amount).unwrap_or(0);
@@ -1220,6 +1232,7 @@ impl PayrollStream {
             start_ts,
             end_ts,
             metadata_hash,
+            core::option::Option::<stream_curve::SpeedCurve>::None, // speed_curve not supported via gateway yet
         )
     }
 
@@ -1303,6 +1316,7 @@ impl PayrollStream {
         start_ts: u64,
         end_ts: u64,
         metadata_hash: Option<BytesN<32>>,
+        speed_curve: Option<stream_curve::SpeedCurve>,
     ) -> Result<u64, QuipayError> {
         if rate <= 0 {
             return Err(QuipayError::InvalidAmount);
@@ -1393,6 +1407,7 @@ impl PayrollStream {
             total_paused_duration: 0,
             metadata_hash,
             cancel_effective_at: 0,
+            speed_curve: speed_curve.unwrap_or(stream_curve::SpeedCurve::Linear),
         };
 
         env.storage()
@@ -1879,7 +1894,7 @@ impl PayrollStream {
     }
 
     /// Invoke `payout_liability` on the vault contract.
-    pub (crate) fn call_vault_payout(
+    pub(crate) fn call_vault_payout(
         env: &Env,
         vault: &Address,
         worker: Address,
@@ -1900,7 +1915,12 @@ impl PayrollStream {
     }
 
     /// Invoke `remove_liability` on the vault contract.
-     pub (crate) fn call_vault_remove_liability(env: &Env, vault: &Address, token: Address, amount: i128) {
+    pub(crate) fn call_vault_remove_liability(
+        env: &Env,
+        vault: &Address,
+        token: Address,
+        amount: i128,
+    ) {
         use soroban_sdk::{IntoVal, Symbol, vec};
         env.invoke_contract::<()>(
             vault,
@@ -1909,7 +1929,7 @@ impl PayrollStream {
         );
     }
 
-    pub (crate) fn vested_amount_at(stream: &Stream, timestamp: u64) -> i128 {
+    pub(crate) fn vested_amount_at(stream: &Stream, timestamp: u64) -> i128 {
         let is_closed = Self::is_closed(stream);
         let mut effective_ts = if is_closed {
             core::cmp::min(timestamp, stream.closed_at)
@@ -1957,41 +1977,47 @@ impl PayrollStream {
             return stream.total_amount;
         }
 
-        let elapsed_i: i128 = elapsed as i128;
-        let duration_i: i128 = duration as i128;
-
-        stream
-            .total_amount
-            .checked_mul(elapsed_i)
-            .unwrap_or(stream.total_amount)
-            .checked_div(duration_i)
-            .unwrap_or(stream.total_amount)
+        // Delegate to the curve module — all three curves share the same
+        // boundary guarantees and integer-safe implementation.
+        stream_curve::compute_vested(elapsed, duration, stream.total_amount, stream.speed_curve)
     }
 
-    pub fn raise_dispute(env: Env, stream_id: u64, caller: Address, reason_hash: soroban_sdk::BytesN<32>) -> Result<(), QuipayError>{
+    pub fn raise_dispute(
+        env: Env,
+        stream_id: u64,
+        caller: Address,
+        reason_hash: soroban_sdk::BytesN<32>,
+    ) -> Result<(), QuipayError> {
         Self::require_not_paused(&env)?;
         dispute::raise_dispute(&env, stream_id, &caller, reason_hash)
     }
 
-    pub fn resolve_dispute(env: Env, stream_id: u64, arbitrator: Address, outcome: DisputeOutcome,) -> Result<(), QuipayError> {
+    pub fn resolve_dispute(
+        env: Env,
+        stream_id: u64,
+        arbitrator: Address,
+        outcome: DisputeOutcome,
+    ) -> Result<(), QuipayError> {
         Self::require_not_paused(&env)?;
         dispute::resolve_dispute(&env, stream_id, &arbitrator, outcome)
     }
 
     pub fn get_dispute(env: Env, stream_id: u64) -> Option<dispute::Dispute> {
-    dispute::get_dispute(&env, stream_id)
+        dispute::get_dispute(&env, stream_id)
     }
 
     pub fn has_open_dispute(env: Env, stream_id: u64) -> bool {
-    dispute::has_open_dispute(&env, stream_id)
+        dispute::has_open_dispute(&env, stream_id)
     }
 }
 
+mod dispute;
 mod extension_test;
 mod pause_test;
 mod stream_extension;
 mod stream_pause;
-mod dispute;
+
+mod stream_curve;
 mod test;
 
 #[cfg(test)]
