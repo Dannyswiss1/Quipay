@@ -27,7 +27,7 @@ pub enum DataKey {
     WithdrawalCooldown,      // Minimum seconds a worker must wait between withdrawals
     LastWithdrawal(Address), // Timestamp of last successful withdrawal per worker
     CancellationGracePeriod, // Seconds a stream keeps paying after cancel is requested
-    Dispute(u64),             // Active dispute for a stream (stream_id)
+    Dispute(u64),            // Active dispute for a stream (stream_id)
     MaxStreamDuration,       // Configurable maximum stream duration in seconds
 }
 
@@ -1981,7 +1981,7 @@ impl PayrollStream {
         );
     }
 
-    pub (crate) fn vested_amount_at(stream: &Stream, timestamp: u64) -> i128 {
+    // pub (crate) fn vested_amount_at(stream: &Stream, timestamp: u64) -> i128 {}
     /// Calculate the vested amount at a specific timestamp, accounting for pauses.
     ///
     /// This function implements the core vesting logic with support for pause/resume cycles.
@@ -2106,6 +2106,7 @@ impl PayrollStream {
     pub fn has_open_dispute(env: Env, stream_id: u64) -> bool {
         dispute::has_open_dispute(&env, stream_id)
     }
+    // Contract methods implemented here
 }
 
 mod dispute;
