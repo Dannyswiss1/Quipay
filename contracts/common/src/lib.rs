@@ -2,4 +2,4 @@
 
 pub mod error;
 
-pub use error::{QuipayError, QuipayHelpers, QuipayResult,};
+pub use error::{QuipayError, QuipayHelpers, QuipayResult};
