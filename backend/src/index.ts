@@ -13,6 +13,9 @@ import { proofsRouter } from "./routes/proofs";
 import { stellarRouter } from "./routes/stellar";
 import { reportsRouter } from "./routes/reports";
 import { employersRouter } from "./routes/employers";
+import { streamsRouter } from "./routes/streams";
+import { payslipsRouter } from "./routes/payslips";
+import { brandingRouter } from "./routes/branding";
 import { startStellarListener } from "./stellarListener";
 import { startScheduler, getSchedulerStatus } from "./scheduler/scheduler";
 import { startMonitor, runMonitorCycle } from "./monitor/monitor";
@@ -35,8 +38,11 @@ import Redis from "ioredis";
 import { rpc } from "@stellar/stellar-sdk";
 import { secretsBootstrap } from "./services/secretsBootstrap";
 import { requestIdMiddleware } from "./middleware/requestId";
+import { httpLoggerMiddleware } from "./middleware/httpLogger";
 import { requireMonitorStatusAdminToken } from "./middleware/monitorStatusAuth";
+import { inputSanitizationMiddleware } from "./middleware/inputSanitization";
 import { getHealthResponse } from "./health";
+import { createCorsOptions, getAllowedOrigins } from "./config/cors";
 
 dotenv.config();
 
@@ -44,9 +50,7 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 // CORS configuration with origin whitelist
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim())
-  : ["http://localhost:5173"];
+const ALLOWED_ORIGINS = getAllowedOrigins();
 
 // In production, ALLOWED_ORIGINS must be explicitly set
 if (process.env.NODE_ENV === "production" && !process.env.ALLOWED_ORIGINS) {
@@ -56,43 +60,31 @@ if (process.env.NODE_ENV === "production" && !process.env.ALLOWED_ORIGINS) {
   process.exit(1);
 }
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, Postman)
-      if (!origin) {
-        return callback(null, true);
-      }
-
-      if (ALLOWED_ORIGINS.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
-    credentials: true,
-  }),
-);
+app.use(cors(createCorsOptions(ALLOWED_ORIGINS)));
 app.use(
   express.json({
-    limit: "1mb",
+    limit: "64kb",
     verify: (req: any, res: any, buf: Buffer) => {
       req.rawBody = buf;
     },
   }),
 ); // Limit payload size to prevent memory exhaustion
+app.use(inputSanitizationMiddleware);
 app.use(
   express.urlencoded({
     extended: true,
-    limit: "1mb",
+    limit: "64kb",
     verify: (req: any, res: any, buf: Buffer) => {
       req.rawBody = buf;
     },
   }),
 ); // For Slack form data
 
-// Add X-Request-ID generation/forwarding via AsyncLocalStorage
+// Add X-Request-ID / X-Correlation-ID generation/forwarding via AsyncLocalStorage
 app.use(requestIdMiddleware);
+
+// Emit one structured JSON log line per request (correlationId, method, path, statusCode, durationMs)
+app.use(httpLoggerMiddleware);
 
 // Initialize database and audit logger
 async function initializeServices() {
@@ -111,6 +103,12 @@ app.use("/api-docs", docsRouter);
 // Backwards-compatible alias
 app.use("/docs", docsRouter);
 
+// CSP violation reporting endpoint
+app.post("/csp-report", (req, res) => {
+  console.error("CSP Violation:", JSON.stringify(req.body, null, 2));
+  res.status(204).end();
+});
+
 app.use("/webhooks", webhookRouter);
 app.use("/slack", slackRouter);
 // Note: discordRouter utilizes native express payloads natively bypassing body buffers mapping local examples
@@ -124,6 +122,11 @@ app.use("/api/employers", employersRouter);
 app.use("/proofs", proofsRouter);
 app.use("/stellar", stellarRouter);
 app.use("/reports", reportsRouter);
+app.use("/streams", streamsRouter);
+app.use("/api/streams", streamsRouter);
+app.use("/api/workers", payslipsRouter);
+app.use("/api", payslipsRouter); // For /api/verify-signature
+app.use("/api/employers", brandingRouter);
 
 // Start time for uptime calculation
 const startTime = Date.now();

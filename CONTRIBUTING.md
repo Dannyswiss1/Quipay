@@ -154,6 +154,12 @@ refactor/contract-error-types
 ### Frontend
 
 ```bash
+# Unit and snapshot tests
+npm test
+
+# Update snapshot baselines intentionally after UI changes
+npm run test:update-snapshots
+
 # End-to-end tests (requires dev server running)
 npm run test:e2e
 
@@ -161,10 +167,12 @@ npm run test:e2e
 npm run test:e2e:ui
 ```
 
+Snapshot tests fail automatically in CI when rendered output diverges from the committed baseline. If a visual change is intentional, run `npm run test:update-snapshots`, review the generated snapshot diff, and include it in your pull request.
+
 ### Backend
 
 ```bash
-cd backend
+  cd backend
 
 # Unit tests
 npm run test:unit
@@ -208,6 +216,8 @@ cargo test -- --nocapture
 
 ## Commit Format
 
+Commit messages are **automatically validated** by [commitlint](https://commitlint.js.org/) via a Husky `commit-msg` hook. Non-conforming messages will be rejected locally and in CI.
+
 Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
@@ -218,15 +228,43 @@ type(scope): description
 [optional footer]
 ```
 
-**Types:** `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`, `ci`
+### Valid Types
 
-**Examples:**
+| Type       | When to use                                     |
+| ---------- | ----------------------------------------------- |
+| `feat`     | A new feature                                   |
+| `fix`      | A bug fix                                       |
+| `docs`     | Documentation only changes                      |
+| `style`    | Formatting, whitespace (no logic change)        |
+| `refactor` | Code change that is neither a fix nor a feature |
+| `test`     | Adding or updating tests                        |
+| `chore`    | Build tooling, dependencies, config             |
+| `ci`       | CI/CD pipeline changes                          |
+| `perf`     | Performance improvements                        |
+| `revert`   | Reverting a previous commit                     |
+
+### Rules
+
+- Header max length: **100 characters**
+- Subject must not use Start Case, PascalCase, or UPPER CASE
+- Type must not be empty
+
+### Examples
 
 ```
 feat(streams): add pause and resume functionality
 fix(vault): correct treasury balance calculation on withdrawal
 docs(api): update stream creation endpoint documentation
 test(contracts): add edge case tests for batch claims
+ci(commitlint): enforce conventional commit messages
+```
+
+### Bypassing hooks (not recommended)
+
+Use `--no-verify` sparingly — commits that bypass hooks will fail CI:
+
+```bash
+git commit --no-verify -m "wip"
 ```
 
 ## Pull Request Process
@@ -335,7 +373,7 @@ You do **not** need an ADR for routine bug fixes, UI tweaks, or adding tests.
 
 ### ADR checklist (for PR reviewers)
 
-- [ ] Context explains *why* a decision was needed, not just what it is.
+- [ ] Context explains _why_ a decision was needed, not just what it is.
 - [ ] Decision section starts with "We will…" or "We decided to…".
 - [ ] Alternatives considered are listed with rejection rationale.
 - [ ] Positive and Negative consequences are both filled in.

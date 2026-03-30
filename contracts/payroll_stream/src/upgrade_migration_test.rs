@@ -24,6 +24,7 @@ fn setup_test(env: &Env) -> (Address, PayrollStreamClient) {
     let contract_id = env.register(PayrollStream, ());
     let client = PayrollStreamClient::new(env, &contract_id);
     client.init(&admin);
+    client.set_min_stream_duration(&0u64);
     client.set_vault(&vault_id);
     (admin, client)
 }
@@ -39,13 +40,14 @@ fn test_upgrade_proposal_and_state_preservation() {
     let token = Address::generate(&env);
 
     let stream_id = client.create_stream(
-        &employer,
-        &worker,
-        &token,
-        &100,
-        &0u64,
-        &env.ledger().timestamp(),
-        &(env.ledger().timestamp() + 1000),
+        &employer, 
+        &worker, 
+        &token, 
+        &100, 
+        &0u64, 
+        &env.ledger().timestamp(), 
+        &(env.ledger().timestamp() + 1000), 
+        &None,
         &None,
     );
     assert_eq!(stream_id, 1);
